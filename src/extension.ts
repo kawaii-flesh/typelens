@@ -1,7 +1,7 @@
 'use strict'
 import * as vscode from 'vscode'
 import { commands } from 'vscode'
-import { TSCodeLensProvider } from './tSCodeLensProvider'
+import { TSCodeLensProvider } from './tsCodeLensProvider'
 
 async function triggerCodeLensComputation() {
     if (!vscode.window.activeTextEditor) return

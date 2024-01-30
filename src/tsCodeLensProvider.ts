@@ -113,6 +113,74 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         })
     }
 
+    private createCodeLens(
+        codeLens: MethodReferenceLens,
+        filteredLocations: Location[],
+        settings: TypeLensConfiguration,
+    ) {
+        const blackboxList = this.config.settings.blackbox || []
+        const nonBlackBoxedLocations = filteredLocations.filter(location => {
+            const fileName = location.uri.path
+            return !blackboxList.some(pattern => {
+                return new Minimatch(pattern).match(fileName)
+            })
+        })
+
+        const isSameDocument = codeLens.uri == vscode.window.activeTextEditor.document.uri
+        const amount = nonBlackBoxedLocations.length
+
+        if (amount == 0 && filteredLocations.length == 0 && isSameDocument && settings.decorateunused) {
+            if (this.unusedDecorations.has(codeLens.uri.fsPath)) {
+                const decorationsForFile = this.unusedDecorations.get(codeLens.uri.fsPath)
+                decorationsForFile.ranges.push(codeLens.range)
+                this.updateDecorations(codeLens.uri)
+            }
+        }
+        const message = this.formatMessage(amount, settings, codeLens)
+        if (amount == 0 && filteredLocations.length != 0) {
+            return new CodeLens(
+                new vscode.Range(
+                    codeLens.range.start.line,
+                    codeLens.range.start.character,
+                    codeLens.range.start.line,
+                    90000,
+                ),
+                {
+                    command: '',
+                    title: settings.blackboxTitle,
+                },
+            )
+        } else if (amount > 0) {
+            return new CodeLens(
+                new vscode.Range(
+                    codeLens.range.start.line,
+                    codeLens.range.start.character,
+                    codeLens.range.start.line,
+                    90000,
+                ),
+                {
+                    command: 'editor.action.showReferences',
+                    title: message,
+                    arguments: [codeLens.uri, codeLens.range.start, nonBlackBoxedLocations],
+                },
+            )
+        } else {
+            return new CodeLens(
+                new vscode.Range(
+                    codeLens.range.start.line,
+                    codeLens.range.start.character,
+                    codeLens.range.start.line,
+                    90000,
+                ),
+                {
+                    command: 'editor.action.findReferences',
+                    title: message,
+                    arguments: [codeLens.uri, codeLens.range.start],
+                },
+            )
+        }
+    }
+
     private getFlattenedSymbols(symbols: vscode.SymbolInformation[] | vscode.DocumentSymbol[]) {
         const flattenedSymbols: {
             kind: SymbolKind
@@ -120,8 +188,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
             range: Range
         }[] = []
         const walk = (p: DocumentSymbol) => {
-          // eslint-disable-next-line no-extra-semi 
-            ;(p.children || []).forEach(p => walk(p))
+            p.children.forEach(p => walk(p))
             flattenedSymbols.push(p)
         }
 
@@ -257,67 +324,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
                         })
                     }
 
-                    const blackboxList = this.config.settings.blackbox || []
-                    const nonBlackBoxedLocations = filteredLocations.filter(location => {
-                        const fileName = location.uri.path
-                        return !blackboxList.some(pattern => {
-                            return new Minimatch(pattern).match(fileName)
-                        })
-                    })
-
-                    const isSameDocument = codeLens.uri == vscode.window.activeTextEditor.document.uri
-                    const amount = nonBlackBoxedLocations.length
-                    const message = this.formatMessage(amount, settings, codeLens)
-
-                    if (amount == 0 && filteredLocations.length == 0 && isSameDocument && settings.decorateunused) {
-                        if (this.unusedDecorations.has(codeLens.uri.fsPath)) {
-                            const decorationsForFile = this.unusedDecorations.get(codeLens.uri.fsPath)
-                            decorationsForFile.ranges.push(codeLens.range)
-                            this.updateDecorations(codeLens.uri)
-                        }
-                    }
-                    if (amount == 0 && filteredLocations.length != 0) {
-                        return new CodeLens(
-                            new vscode.Range(
-                                codeLens.range.start.line,
-                                codeLens.range.start.character,
-                                codeLens.range.start.line,
-                                90000,
-                            ),
-                            {
-                                command: '',
-                                title: settings.blackboxTitle,
-                            },
-                        )
-                    } else if (amount > 0) {
-                        return new CodeLens(
-                            new vscode.Range(
-                                codeLens.range.start.line,
-                                codeLens.range.start.character,
-                                codeLens.range.start.line,
-                                90000,
-                            ),
-                            {
-                                command: 'editor.action.showReferences',
-                                title: message,
-                                arguments: [codeLens.uri, codeLens.range.start, nonBlackBoxedLocations],
-                            },
-                        )
-                    } else {
-                        return new CodeLens(
-                            new vscode.Range(
-                                codeLens.range.start.line,
-                                codeLens.range.start.character,
-                                codeLens.range.start.line,
-                                90000,
-                            ),
-                            {
-                                command: 'editor.action.findReferences',
-                                title: message,
-                                arguments: [codeLens.uri, codeLens.range.start],
-                            },
-                        )
-                    }
+                    return this.createCodeLens(codeLens, filteredLocations, settings)
                 })
         }
     }
