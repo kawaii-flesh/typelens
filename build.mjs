@@ -16,12 +16,6 @@ build({
   bundle: true,
   sourcemap: true,
   outfile: "dist/extension.js",
-  watch: watch && {
-    onRebuild(error, result) {
-      if (error) console.error("watch build for extension failed:", error);
-      else console.log("watch build for extension succeeded!");
-    },
-  },
 })
   .then(() => {
     console.log("finished build for extension.");

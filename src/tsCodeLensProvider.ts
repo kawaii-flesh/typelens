@@ -15,11 +15,18 @@ import { Minimatch } from 'minimatch'
 import { SymbolKindInterst, standardSymbolKindSet } from './symbolKindSet'
 import { TypeLensConfiguration } from './typeLensConfiguration'
 
-class MethodReferenceLens extends CodeLens {
+export type FlattenedSymbols = {
+    kind: SymbolKind
+    name: string
+    range: Range
+}
+
+export class MethodReferenceLens extends CodeLens {
     constructor(
         range: Range,
         public uri: vscode.Uri,
         public name: string,
+        public kind: SymbolKind,
         command?: Command,
     ) {
         super(range, command)
@@ -82,14 +89,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         )
     }
 
-    private symbolKindFilter(
-        symbols: {
-            kind: SymbolKind
-            name: string
-            range: Range
-        }[],
-        languageId: string,
-    ) {
+    private symbolKindFilter(symbols: FlattenedSymbols[], languageId: string) {
         return symbols.filter(symbolInformation => {
             let knownInterest: SymbolKind[] = <SymbolKind[]>SymbolKindInterst[languageId]
             if (!knownInterest) {
@@ -113,11 +113,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         })
     }
 
-    private createCodeLens(
-        codeLens: MethodReferenceLens,
-        filteredLocations: Location[],
-        settings: TypeLensConfiguration,
-    ) {
+    getNonBlackBoxedLocations(filteredLocations: Location[]) {
         const blackboxList = this.config.settings.blackbox || []
         const nonBlackBoxedLocations = filteredLocations.filter(location => {
             const fileName = location.uri.path
@@ -125,8 +121,15 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
                 return new Minimatch(pattern).match(fileName)
             })
         })
-
+        return nonBlackBoxedLocations
+    }
+    private createCodeLens(
+        codeLens: MethodReferenceLens,
+        filteredLocations: Location[],
+        settings: TypeLensConfiguration,
+    ) {
         const isSameDocument = codeLens.uri == vscode.window.activeTextEditor.document.uri
+        const nonBlackBoxedLocations = this.getNonBlackBoxedLocations(filteredLocations)
         const amount = nonBlackBoxedLocations.length
 
         if (amount == 0 && filteredLocations.length == 0 && isSameDocument && settings.decorateunused) {
@@ -181,12 +184,79 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         }
     }
 
+    getMethodReferenceLens(symbols: FlattenedSymbols[], document: TextDocument) {
+        const usedPositions = []
+        return symbols
+            .map(symbolInformation => {
+                if (symbolInformation.name == undefined) return
+                const range = symbolInformation.range
+
+                if (!this.isUnsupportedSymbol(symbolInformation) && range) {
+                    const symbolText = document.getText(range)
+                    const documentOffset = document.offsetAt(range.start)
+
+                    let leftMatch: Range
+                    let rightMatch: Range
+
+                    if (symbolText.indexOf(symbolInformation.name) > -1) {
+                        const maxOffset = documentOffset + symbolText.length
+                        let lookupOffset = documentOffset
+                        while (lookupOffset < maxOffset) {
+                            const start = document.positionAt(lookupOffset)
+                            const wordRange = document.getWordRangeAtPosition(start)
+                            if (wordRange && document.getText(wordRange) == symbolInformation.name) {
+                                rightMatch = wordRange
+                                break
+                            } else {
+                                lookupOffset += symbolInformation.name.length
+                            }
+                        }
+                    } else {
+                        const minOffset = Math.max(documentOffset - symbolText.length, 0)
+                        let lookupOffset = documentOffset
+                        while (lookupOffset > minOffset) {
+                            const start = document.positionAt(lookupOffset)
+                            const wordRange = document.getWordRangeAtPosition(start)
+                            if (wordRange && document.getText(wordRange) == symbolInformation.name) {
+                                leftMatch = wordRange
+                                break
+                            } else {
+                                lookupOffset -= symbolInformation.name.length
+                            }
+                        }
+                    }
+                    let resultingRange
+                    if (leftMatch == null && rightMatch == null) {
+                        resultingRange = range
+                    } else if (leftMatch != null && rightMatch == null) {
+                        resultingRange = leftMatch
+                    } else if (leftMatch == null && rightMatch != null) {
+                        resultingRange = rightMatch
+                    } else {
+                        resultingRange =
+                            documentOffset - document.offsetAt(leftMatch.start) <
+                            document.offsetAt(rightMatch.start) - documentOffset
+                                ? leftMatch
+                                : rightMatch
+                    }
+
+                    const position = document.offsetAt(resultingRange.start)
+                    if (!usedPositions[position]) {
+                        usedPositions[position] = 1
+                        return new MethodReferenceLens(
+                            resultingRange,
+                            document.uri,
+                            symbolInformation.name,
+                            symbolInformation.kind,
+                        )
+                    }
+                }
+            })
+            .filter(item => item != null)
+    }
+
     private getFlattenedSymbols(symbols: vscode.SymbolInformation[] | vscode.DocumentSymbol[]) {
-        const flattenedSymbols: {
-            kind: SymbolKind
-            name: string
-            range: Range
-        }[] = []
+        const flattenedSymbols: FlattenedSymbols[] = []
         const walk = (p: DocumentSymbol) => {
             p.children.forEach(p => walk(p))
             flattenedSymbols.push(p)
@@ -224,7 +294,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         return message
     }
 
-    provideCodeLenses(document: TextDocument): CodeLens[] | Thenable<CodeLens[]> {
+    async getSymbolsReferences(document: TextDocument) {
         const settings = this.config.settings
         this.reinitDecorations()
         if (this.isExcluded(document.uri.fsPath)) {
@@ -234,98 +304,40 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
             return
         }
 
-        return commands
-            .executeCommand<
-                SymbolInformation[] | DocumentSymbol[]
-            >('vscode.executeDocumentSymbolProvider', document.uri)
-            .then(symbols => {
-                const usedPositions = []
-                symbols = symbols || []
-
-                const flattenedSymbols = this.getFlattenedSymbols(symbols)
-
-                return this.symbolKindFilter(flattenedSymbols, document.languageId)
-                    .map(symbolInformation => {
-                        if (symbolInformation.name == undefined) return
-                        const range = symbolInformation.range
-
-                        if (!this.isUnsupportedSymbol(symbolInformation) && range) {
-                            const symbolText = document.getText(range)
-                            const documentOffset = document.offsetAt(range.start)
-
-                            let leftMatch: Range
-                            let rightMatch: Range
-
-                            if (symbolText.indexOf(symbolInformation.name) > -1) {
-                                const maxOffset = documentOffset + symbolText.length
-                                let lookupOffset = documentOffset
-                                while (lookupOffset < maxOffset) {
-                                    const start = document.positionAt(lookupOffset)
-                                    const wordRange = document.getWordRangeAtPosition(start)
-                                    if (wordRange && document.getText(wordRange) == symbolInformation.name) {
-                                        rightMatch = wordRange
-                                        break
-                                    } else {
-                                        lookupOffset += symbolInformation.name.length
-                                    }
-                                }
-                            } else {
-                                const minOffset = Math.max(documentOffset - symbolText.length, 0)
-                                let lookupOffset = documentOffset
-                                while (lookupOffset > minOffset) {
-                                    const start = document.positionAt(lookupOffset)
-                                    const wordRange = document.getWordRangeAtPosition(start)
-                                    if (wordRange && document.getText(wordRange) == symbolInformation.name) {
-                                        leftMatch = wordRange
-                                        break
-                                    } else {
-                                        lookupOffset -= symbolInformation.name.length
-                                    }
-                                }
-                            }
-                            let resultingRange
-                            if (leftMatch == null && rightMatch == null) {
-                                resultingRange = range
-                            } else if (leftMatch != null && rightMatch == null) {
-                                resultingRange = leftMatch
-                            } else if (leftMatch == null && rightMatch != null) {
-                                resultingRange = rightMatch
-                            } else {
-                                resultingRange =
-                                    documentOffset - document.offsetAt(leftMatch.start) <
-                                    document.offsetAt(rightMatch.start) - documentOffset
-                                        ? leftMatch
-                                        : rightMatch
-                            }
-
-                            const position = document.offsetAt(resultingRange.start)
-                            if (!usedPositions[position]) {
-                                usedPositions[position] = 1
-                                return new MethodReferenceLens(resultingRange, document.uri, symbolInformation.name)
-                            }
-                        }
-                    })
-                    .filter(item => item != null)
-            })
+        const symbols = await commands.executeCommand<SymbolInformation[] | DocumentSymbol[]>(
+            'vscode.executeDocumentSymbolProvider',
+            document.uri,
+        )
+        const flattenedSymbols = this.getFlattenedSymbols(symbols)
+        return this.symbolKindFilter(flattenedSymbols, document.languageId)
     }
-    resolveCodeLens(codeLens: CodeLens): CodeLens | Thenable<CodeLens> {
-        if (codeLens instanceof MethodReferenceLens) {
-            return commands
-                .executeCommand<Location[]>('vscode.executeReferenceProvider', codeLens.uri, codeLens.range.start)
-                .then(locations => {
-                    const settings = this.config.settings
-                    let filteredLocations = locations
-                    if (settings.excludeself) {
-                        filteredLocations = locations.filter(location => {
-                            const isSameDocument = codeLens.uri.toString() == location.uri.toString()
-                            const isLocationOverlaps = codeLens.range.contains(location.range)
-                            const overlapsWithOriginalSymbol = isSameDocument && isLocationOverlaps
-                            return !overlapsWithOriginalSymbol
-                        })
-                    }
 
-                    return this.createCodeLens(codeLens, filteredLocations, settings)
-                })
+    async provideCodeLenses(document: TextDocument): Promise<CodeLens[]> {
+        const filteredSymbols = await this.getSymbolsReferences(document)
+        return this.getMethodReferenceLens(filteredSymbols, document)
+    }
+    async getFilteredLocations(codeLens: MethodReferenceLens) {
+        const locations = await commands.executeCommand<Location[]>(
+            'vscode.executeReferenceProvider',
+            codeLens.uri,
+            codeLens.range.start,
+        )
+        const settings = this.config.settings
+        let filteredLocations = locations
+        if (settings.excludeself) {
+            filteredLocations = locations.filter(location => {
+                const isSameDocument = codeLens.uri.toString() == location.uri.toString()
+                const isLocationOverlaps = codeLens.range.contains(location.range)
+                const overlapsWithOriginalSymbol = isSameDocument && isLocationOverlaps
+                return !overlapsWithOriginalSymbol
+            })
+            return filteredLocations
+        }
+    }
+    async resolveCodeLens(codeLens: CodeLens): Promise<CodeLens> {
+        if (codeLens instanceof MethodReferenceLens) {
+            const filteredLocations = await this.getFilteredLocations(codeLens)
+            return this.createCodeLens(codeLens, filteredLocations, this.config.settings)
         }
     }
     updateDecorations(uri: vscode.Uri) {
