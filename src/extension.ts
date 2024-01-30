@@ -1,7 +1,7 @@
 'use strict'
 import * as vscode from 'vscode'
-import { commands } from 'vscode'
-import { TSCodeLensProvider } from './tSCodeLensProvider'
+import { commands, TextDocument, SymbolKind } from 'vscode'
+import { MethodReferenceLens, TSCodeLensProvider } from './tsCodeLensProvider'
 
 async function triggerCodeLensComputation() {
     if (!vscode.window.activeTextEditor) return
@@ -12,10 +12,28 @@ async function triggerCodeLensComputation() {
     await commands.executeCommand('undo')
 }
 
-function log() {
+async function logUnused(provider: TSCodeLensProvider) {
+    function formatMessage(document: TextDocument, symbol: MethodReferenceLens) {
+        const positionStart = symbol.range.start
+        return `${SymbolKind[symbol.kind]}: "${symbol.name}" ${document.fileName}:${positionStart.line + 1}:${positionStart.character + 1}`
+    }
     if (!vscode.window.activeTextEditor) return
     const output = vscode.window.createOutputChannel('typelens')
-    output.appendLine('Hello')
+    const document = vscode.window.activeTextEditor.document
+    const symbolsReferences = await provider.getSymbolsReferences(document)
+    const methodReferences = provider.getMethodReferenceLens(symbolsReferences, document)
+
+    output.appendLine('Unused symbols:')
+    let isUnusedSymbolsExist = false
+    for (const symbol of methodReferences) {
+        const filteredLocation = await provider.getFilteredLocations(symbol)
+        const nonBlackBoxedLocations = provider.getNonBlackBoxedLocations(filteredLocation)
+        if (nonBlackBoxedLocations.length === 0) {
+            isUnusedSymbolsExist = true
+            output.appendLine(formatMessage(document, symbol))
+        }
+    }
+    if (!isUnusedSymbolsExist) output.appendLine('Not found')
     output.show()
 }
 
@@ -27,8 +45,8 @@ function setUpCommands(disposables: vscode.Disposable[], provider: TSCodeLensPro
         }),
     )
     disposables.push(
-        commands.registerCommand('typelens.log', () => {
-            log()
+        commands.registerCommand('typelens.unused', async () => {
+            await logUnused(provider)
         }),
     )
 }
