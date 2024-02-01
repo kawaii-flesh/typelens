@@ -38,6 +38,7 @@
     "@typescript-eslint/no-non-null-assertion": [
       "off"
     ],
-    "no-inner-declarations": "off"
+    "no-inner-declarations": "off",
+    "lines-between-class-members": ["error", "always", { "exceptAfterSingleLine": true }]
   }
 }
