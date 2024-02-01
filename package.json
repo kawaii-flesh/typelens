@@ -3,13 +3,13 @@
   "displayName": "TypeLens",
   "icon": "logo.png",
   "description": "Shows references to TypeScript methods in the form of codelens",
-  "version": "1.10.0",
-  "publisher": "kisstkondoros",
-  "author": "Tamas Kiss",
+  "version": "0.0.0",
+  "publisher": "kawaii-flesh",
+  "author": "kawaii-flesh",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/kisstkondoros/typelens.git"
+    "url": "https://github.com/kawaii-flesh/typelens"
   },
   "engines": {
     "vscode": "^1.73.0"
