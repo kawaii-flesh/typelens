@@ -84,6 +84,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
             symbolInformation.name.indexOf('.') > -1 ||
             symbolInformation.name == '<unknown>' ||
             symbolInformation.name == '<function>' ||
+            symbolInformation.name == '<class>' ||
             symbolInformation.name.endsWith(' callback') ||
             this.config.settings.ignorelist.indexOf(symbolInformation.name) > -1
         )
@@ -184,6 +185,27 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         }
     }
 
+    private getResultRange(
+        range: Range,
+        leftMatch: Range,
+        rightMatch: Range,
+        document: TextDocument,
+        documentOffset: number,
+    ) {
+        if (leftMatch == null && rightMatch == null) {
+            return range
+        } else if (leftMatch != null && rightMatch == null) {
+            return leftMatch
+        } else if (leftMatch == null && rightMatch != null) {
+            return rightMatch
+        } else {
+            return documentOffset - document.offsetAt(leftMatch.start) <
+                document.offsetAt(rightMatch.start) - documentOffset
+                ? leftMatch
+                : rightMatch
+        }
+    }
+
     getMethodReferenceLens(symbols: FlattenedSymbols[], document: TextDocument) {
         const usedPositions = []
         return symbols
@@ -225,20 +247,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
                             }
                         }
                     }
-                    let resultingRange
-                    if (leftMatch == null && rightMatch == null) {
-                        resultingRange = range
-                    } else if (leftMatch != null && rightMatch == null) {
-                        resultingRange = leftMatch
-                    } else if (leftMatch == null && rightMatch != null) {
-                        resultingRange = rightMatch
-                    } else {
-                        resultingRange =
-                            documentOffset - document.offsetAt(leftMatch.start) <
-                            document.offsetAt(rightMatch.start) - documentOffset
-                                ? leftMatch
-                                : rightMatch
-                    }
+                    const resultingRange = this.getResultRange(range, leftMatch, rightMatch, document, documentOffset)
 
                     const position = document.offsetAt(resultingRange.start)
                     if (!usedPositions[position]) {
@@ -294,7 +303,11 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         return message
     }
 
-    async getSymbolsReferences(document: TextDocument) {
+    formatMessageForOutput(document: TextDocument, symbol: MethodReferenceLens) {
+        const positionStart = symbol.range.start
+        return `${vscode.SymbolKind[symbol.kind]}: "${symbol.name}" ${document.fileName}:${positionStart.line + 1}:${positionStart.character + 1}`
+    }
+    private async getSymbolsReferences(document: TextDocument) {
         const settings = this.config.settings
         this.reinitDecorations()
         if (this.isExcluded(document.uri.fsPath)) {
@@ -312,7 +325,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         return this.symbolKindFilter(flattenedSymbols, document.languageId)
     }
 
-    async provideCodeLenses(document: TextDocument): Promise<CodeLens[]> {
+    async provideCodeLenses(document: TextDocument): Promise<MethodReferenceLens[]> {
         const filteredSymbols = await this.getSymbolsReferences(document)
         return this.getMethodReferenceLens(filteredSymbols, document)
     }
