@@ -8,41 +8,23 @@ import {
     Range,
     Location,
     commands,
-    Command,
 } from 'vscode'
-import { AppConfiguration } from './appConfiguration'
+import { AppConfiguration } from '../application/appConfiguration'
 import { Minimatch } from 'minimatch'
 import { SymbolKindInterst, standardSymbolKindSet } from './symbolKindSet'
-import { TypeLensConfiguration } from './typeLensConfiguration'
+import { TypeLensConfiguration } from '../application/typeLensConfiguration'
+import { Helper } from './tsCodeLensHelper'
+import { FlattenedSymbols, MethodReferenceLens, UnusedDecoration } from './types'
 
-export type FlattenedSymbols = {
-    kind: SymbolKind
-    name: string
-    range: Range
-}
-
-export class MethodReferenceLens extends CodeLens {
-    constructor(
-        range: Range,
-        public uri: vscode.Uri,
-        public name: string,
-        public kind: SymbolKind,
-        command?: Command,
-    ) {
-        super(range, command)
-    }
-}
-class UnusedDecoration {
-    ranges: vscode.Range[] = []
-    decoration: vscode.TextEditorDecorationType
-}
 export class TSCodeLensProvider implements vscode.CodeLensProvider {
     config: AppConfiguration
 
     private unusedDecorations: Map<string, UnusedDecoration> = new Map<string, UnusedDecoration>()
+    private helper
 
     constructor() {
         this.config = new AppConfiguration()
+        this.helper = new Helper(this.config)
     }
 
     reinitDecorations() {
@@ -68,26 +50,9 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
             }
         }
     }
+
     private isDocumentSymbol(symbol: vscode.SymbolInformation | DocumentSymbol): symbol is DocumentSymbol {
         return (symbol as DocumentSymbol).children != null
-    }
-
-    private isExcluded(fileName: string) {
-        const exclusionList = this.config.settings.exclude || []
-        return exclusionList.some(pattern => {
-            return new Minimatch(pattern).match(fileName)
-        })
-    }
-
-    private isUnsupportedSymbol(symbolInformation: { name: string }) {
-        return (
-            symbolInformation.name.indexOf('.') > -1 ||
-            symbolInformation.name == '<unknown>' ||
-            symbolInformation.name == '<function>' ||
-            symbolInformation.name == '<class>' ||
-            symbolInformation.name.endsWith(' callback') ||
-            this.config.settings.ignorelist.indexOf(symbolInformation.name) > -1
-        )
     }
 
     private symbolKindFilter(symbols: FlattenedSymbols[], languageId: string) {
@@ -124,6 +89,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         })
         return nonBlackBoxedLocations
     }
+
     private createCodeLens(
         codeLens: MethodReferenceLens,
         filteredLocations: Location[],
@@ -140,48 +106,24 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
                 this.updateDecorations(codeLens.uri)
             }
         }
-        const message = this.formatMessage(amount, settings, codeLens)
+        const message = this.helper.formatMessage(amount, settings, codeLens)
         if (amount == 0 && filteredLocations.length != 0) {
-            return new CodeLens(
-                new vscode.Range(
-                    codeLens.range.start.line,
-                    codeLens.range.start.character,
-                    codeLens.range.start.line,
-                    90000,
-                ),
-                {
-                    command: '',
-                    title: settings.blackboxTitle,
-                },
-            )
+            return new CodeLens(this.helper.getRangeForCodeLens(codeLens), {
+                command: '',
+                title: settings.blackboxTitle,
+            })
         } else if (amount > 0) {
-            return new CodeLens(
-                new vscode.Range(
-                    codeLens.range.start.line,
-                    codeLens.range.start.character,
-                    codeLens.range.start.line,
-                    90000,
-                ),
-                {
-                    command: 'editor.action.showReferences',
-                    title: message,
-                    arguments: [codeLens.uri, codeLens.range.start, nonBlackBoxedLocations],
-                },
-            )
+            return new CodeLens(this.helper.getRangeForCodeLens(codeLens), {
+                command: 'editor.action.showReferences',
+                title: message,
+                arguments: [codeLens.uri, codeLens.range.start, nonBlackBoxedLocations],
+            })
         } else {
-            return new CodeLens(
-                new vscode.Range(
-                    codeLens.range.start.line,
-                    codeLens.range.start.character,
-                    codeLens.range.start.line,
-                    90000,
-                ),
-                {
-                    command: 'editor.action.findReferences',
-                    title: message,
-                    arguments: [codeLens.uri, codeLens.range.start],
-                },
-            )
+            return new CodeLens(this.helper.getRangeForCodeLens(codeLens), {
+                command: 'editor.action.findReferences',
+                title: message,
+                arguments: [codeLens.uri, codeLens.range.start],
+            })
         }
     }
 
@@ -213,7 +155,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
                 if (symbolInformation.name == undefined) return
                 const range = symbolInformation.range
 
-                if (!this.isUnsupportedSymbol(symbolInformation) && range) {
+                if (!this.helper.isUnsupportedSymbol(symbolInformation) && range) {
                     const symbolText = document.getText(range)
                     const documentOffset = document.offsetAt(range.start)
 
@@ -288,29 +230,15 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         return flattenedSymbols
     }
 
-    private formatMessage(amount: number, settings: TypeLensConfiguration, codeLens: MethodReferenceLens) {
-        let message
-        if (amount == 0) {
-            message = settings.noreferences
-            message = message.replace('{0}', codeLens.name + '')
-        } else if (amount == 1) {
-            message = settings.singular
-            message = message.replace('{0}', amount + '')
-        } else {
-            message = settings.plural
-            message = message.replace('{0}', amount + '')
-        }
-        return message
-    }
-
     formatMessageForOutput(document: TextDocument, symbol: MethodReferenceLens) {
         const positionStart = symbol.range.start
         return `${vscode.SymbolKind[symbol.kind]}: "${symbol.name}" ${document.fileName}:${positionStart.line + 1}:${positionStart.character + 1}`
     }
+
     private async getSymbolsReferences(document: TextDocument) {
         const settings = this.config.settings
         this.reinitDecorations()
-        if (this.isExcluded(document.uri.fsPath)) {
+        if (this.helper.isExcluded(document.uri.fsPath)) {
             return []
         }
         if (!this.config.typeLensEnabled || settings.skiplanguages.indexOf(document.languageId) > -1) {
@@ -329,6 +257,7 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
         const filteredSymbols = await this.getSymbolsReferences(document)
         return this.getMethodReferenceLens(filteredSymbols, document)
     }
+
     async getFilteredLocations(codeLens: MethodReferenceLens) {
         const locations = await commands.executeCommand<Location[]>(
             'vscode.executeReferenceProvider',
@@ -347,12 +276,14 @@ export class TSCodeLensProvider implements vscode.CodeLensProvider {
             return filteredLocations
         }
     }
+
     async resolveCodeLens(codeLens: CodeLens): Promise<CodeLens> {
         if (codeLens instanceof MethodReferenceLens) {
             const filteredLocations = await this.getFilteredLocations(codeLens)
             return this.createCodeLens(codeLens, filteredLocations, this.config.settings)
         }
     }
+
     updateDecorations(uri: vscode.Uri) {
         const isSameDocument = uri == vscode.window.activeTextEditor.document.uri
         if (isSameDocument) {

@@ -1,4 +1,4 @@
-import { TSCodeLensProvider } from './tsCodeLensProvider'
+import { TSCodeLensProvider } from '../tsCodeLens/tsCodeLensProvider'
 import * as vscode from 'vscode'
 import { OutputChannel, commands } from 'vscode'
 export class Application {
@@ -11,6 +11,7 @@ export class Application {
         }
         return this._output
     }
+
     async logUnused() {
         if (!this.provider.config.typeLensEnabled) return
         if (!vscode.window.activeTextEditor) return
@@ -19,7 +20,7 @@ export class Application {
 
         this.output.clear()
         this.output.appendLine('Unused symbols:')
-        this.output.appendLine(document.fileName)
+        this.output.appendLine(`File: ${document.fileName}`)
         let isUnusedSymbolsExist = false
         for (const symbol of methodReferences) {
             const filteredLocation = await this.provider.getFilteredLocations(symbol)

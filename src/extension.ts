@@ -1,7 +1,7 @@
 'use strict'
 import * as vscode from 'vscode'
 import { commands } from 'vscode'
-import { Application } from './application'
+import { Application } from './application/application'
 
 const application = new Application()
 function setUpCommands(disposables: vscode.Disposable[]) {
